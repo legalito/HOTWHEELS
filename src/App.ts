@@ -24,16 +24,19 @@ export class App {
 
   private keys: { [key: string]: boolean } = {};
 
+  private cameraOffset!: THREE.Object3D; // Déclaration du conteneur pour la caméra
+
   async init() {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x202020);
 
     this.camera = new THREE.PerspectiveCamera(
-      75,
+      70,
       window.innerWidth / window.innerHeight,
       0.1,
       1000
     );
+    this.camera.position.set(0, 0, -1);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
@@ -52,7 +55,10 @@ export class App {
 
     // === Add Plane Geometry ===
     const planeGeometry = new THREE.PlaneGeometry(10, 10); // Dimensions du plan
-    const planeMaterial = new THREE.MeshStandardMaterial({ color: 0xaaaaaa, side: THREE.DoubleSide });
+    const planeMaterial = new THREE.MeshStandardMaterial({
+      color: 0xaaaaaa,
+      side: THREE.DoubleSide,
+    });
     const planeMesh = new THREE.Mesh(planeGeometry, planeMaterial);
     planeMesh.rotation.x = -Math.PI / 2; // Rotation pour que le plan soit horizontal
     this.scene.add(planeMesh); // Ajout du plan à la scène
@@ -60,12 +66,12 @@ export class App {
     // === Load 3D Models ===
     this.raceTrack = new Model3D();
     this.car = new Model3D();
-    
+
     try {
       //await this.raceTrack.loadModel("/assets/drift_race_track_free.glb");
       await this.car.loadModel("/assets/aston_martin_valkyrie.glb");
       this.car.mesh.scale.set(2.01, 2.01, 2.01);
-      
+
       //this.scene.add(this.raceTrack.mesh);
       this.scene.add(this.car.mesh);
       this.car.mesh.scale.set(5, 5, 5);
@@ -85,45 +91,63 @@ export class App {
 
     // === Car GUI Controls ===
     const carFolder = this.gui.addFolder("Car");
-    
+
     // Position controls
     const positionFolder = carFolder.addFolder("Position");
     positionFolder.add(this.car.mesh.position, "x", -10, 10).name("X");
     positionFolder.add(this.car.mesh.position, "y", -10, 10).name("Y");
     positionFolder.add(this.car.mesh.position, "z", -10, 10).name("Z");
-    
+
     // Rotation controls
     const rotationFolder = carFolder.addFolder("Rotation");
-    rotationFolder.add(this.car.mesh.rotation, "x", -Math.PI, Math.PI).name("X");
-    rotationFolder.add(this.car.mesh.rotation, "y", -Math.PI, Math.PI).name("Y");
-    rotationFolder.add(this.car.mesh.rotation, "z", -Math.PI, Math.PI).name("Z");
-    
+    rotationFolder
+      .add(this.car.mesh.rotation, "x", -Math.PI, Math.PI)
+      .name("X");
+    rotationFolder
+      .add(this.car.mesh.rotation, "y", -Math.PI, Math.PI)
+      .name("Y");
+    rotationFolder
+      .add(this.car.mesh.rotation, "z", -Math.PI, Math.PI)
+      .name("Z");
+
     // Scale controls
     const scaleFolder = carFolder.addFolder("Scale");
     scaleFolder.add(this.car.mesh.scale, "x", 0.1, 5).name("X");
     scaleFolder.add(this.car.mesh.scale, "y", 0.1, 5).name("Y");
     scaleFolder.add(this.car.mesh.scale, "z", 0.1, 5).name("Z");
-    
+
     carFolder.open();
 
     // === Camera GUI Controls ===
     const cameraFolder = this.gui.addFolder("Camera");
-    
+
     // Position controls
     const cameraPositionFolder = cameraFolder.addFolder("Position");
     cameraPositionFolder.add(this.camera.position, "x", -50, 50).name("X");
-    cameraPositionFolder.add(this.camera.position, "y", 0, 50).name("Y");
+    cameraPositionFolder.add(this.camera.position, "y", 0, 150).name("Y");
     cameraPositionFolder.add(this.camera.position, "z", -50, 50).name("Z");
-    
+
+    // Zoom controls
+    cameraFolder
+      .add(this.camera, "fov", 1, 180)
+      .name("Field of View")
+      .onChange(() => {
+        this.camera.updateProjectionMatrix(); // Mettre à jour la matrice de projection
+      });
+
+    // Reset camera position
+    cameraFolder.add({ reset: () => {} }, "reset").name("Reset Camera");
+
     cameraFolder.open();
 
-    this.gui.add({ test: () => console.log("Test") }, "test").name("Test Button");
+    this.gui
+      .add({ test: () => console.log("Test") }, "test")
+      .name("Test Button");
 
     window.addEventListener("resize", this.onWindowResize.bind(this));
     window.addEventListener("keydown", this.handleKeyDown.bind(this));
     window.addEventListener("keyup", this.handleKeyUp.bind(this));
   }
-
 
   animate = () => {
     requestAnimationFrame(this.animate);
@@ -131,16 +155,22 @@ export class App {
     this.stats.begin();
 
     this.controls.update();
-    this.renderer.render(this.scene, this.camera);
 
-    // Positionner la caméra derrière la voiture
-    const offset = new THREE.Vector3(0, 2, -5); // Ajustez ces valeurs pour la distance et la hauteur
-    this.camera.position.copy(this.car.mesh.position).add(offset); // Suivre la voiture avec un décalage
+    const direction = new THREE.Vector3();
+    this.car.mesh.getWorldDirection(direction);
 
-    // Faire en sorte que la caméra regarde toujours la voiture
-    this.camera.lookAt(this.car.mesh.position.clone().add(new THREE.Vector3(0, 0, 0))); // Regarder la voiture
+    const cameraOffset = direction.clone().multiplyScalar(-3); // Reculer de 3 unités
+    cameraOffset.y += 1.5; 
+
+    const cameraPosition = this.car.mesh.position.clone().add(cameraOffset);
+    this.camera.position.copy(cameraPosition);
+    
+    this.camera.lookAt(
+      this.car.mesh.position.clone().add(direction.multiplyScalar(10))
+    );
 
     this.controlCar();
+    this.renderer.render(this.scene, this.camera);
 
     this.stats.end();
   };

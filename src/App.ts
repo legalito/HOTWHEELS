@@ -53,6 +53,25 @@ export class App {
 
   private updatePhysics!: () => void; // Declare updatePhysics as a method property
 
+  private clock = new THREE.Clock();
+
+  private isLowQuality: boolean = false;
+
+  // Ajouter une propriété pour contrôler la densité des corps physiques
+  private physicsDensity: number = 1.0; // 1.0 = tous les objets, 0.5 = la moitié, etc.
+
+  // Ajouter une propriété pour l'intervalle de mise à jour physique
+  private physicsStepFrequency: number = 60; // Hz
+
+  // Ajouter une propriété pour contrôler la distance de rendu
+  private renderDistance: number = 1000;
+
+  private frontWheelLeft!: THREE.Object3D;
+  private frontWheelRight!: THREE.Object3D;
+  private rearWheelLeft!: THREE.Object3D;
+  private rearWheelRight!: THREE.Object3D;
+  private wheelRotationSpeed: number = 0.1; // Vitesse de rotation des roues
+
   async init() {
     // === Physics World Setup ===
     this.world = new CANNON.World();
@@ -64,11 +83,13 @@ export class App {
       70,
       window.innerWidth / window.innerHeight,
       0.1,
-      1000
+      this.isLowQuality ? 500 : 1000
     );
     this.camera.position.set(0, 0, -1);
 
-    this.renderer = new THREE.WebGLRenderer({ antialias: true });
+    this.renderer = new THREE.WebGLRenderer({ 
+      antialias: !this.isLowQuality 
+    });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     document.body.appendChild(this.renderer.domElement);
 
@@ -83,11 +104,11 @@ export class App {
     directional.position.set(5, 5, 5);
     this.scene.add(ambient, directional);
 
-    const planeShape = new CANNON.Box(new CANNON.Vec3(150, 150, 0.1)); // Largeur et longueur du sol
+    const planeShape = new CANNON.Box(new CANNON.Vec3(1050, 1050, 0.1)); // Largeur et longueur du sol
     this.planeBody = new CANNON.Body({
       mass: 0,
     }); // Static body
-    this.planeBody.position.set(0, 5, 0); // Positionner le sol au centre
+    this.planeBody.position.set(0, -0.5, 0); // Positionner le sol au centre
     this.planeBody.addShape(planeShape);
     this.planeBody.quaternion.setFromEuler(-Math.PI / 2, 0, 0); // Align with Three.js plane
     this.world.addBody(this.planeBody);
@@ -97,92 +118,79 @@ export class App {
 
     try {
       await this.raceTrack.loadModel(
-        "/assets/track.glb"
+        "/assets/scene.gltf"
       );
       console.log(this.raceTrack.mesh);
-      await this.car.loadModel("/assets/astonMartin.glb");
-      this.car.mesh.scale.set(8, 8, 8);
-      this.raceTrack.mesh.scale.set(0.2, 0.2, 0.2);
+      await this.car.loadModel("/assets/voiture.glb");
+      this.car.mesh.scale.set(0.01, 0.01, 0.01);
       this.scene.add(this.raceTrack.mesh);
       this.scene.add(this.car.mesh);
-      const child = this.raceTrack.mesh.getObjectByName("Cap_2_7_Mat1_0");
-      if (!child) {
-        console.error("L'objet Cap_2_7_Mat1_0 n'a pas été trouvé !");
-      } else {
-        // Cast child to Mesh to access geometry
-        const mesh = child as THREE.Mesh;
-        
-        // 1️⃣ Récupérer les sommets (vertices) du modèle
-        const vertices = mesh.geometry.attributes.position.array;
-        const cannonVertices = [];
-
-        // Convertir les vertices en Vec3 de Cannon.js
-        for (let i = 0; i < vertices.length; i += 3) {
-          cannonVertices.push(
-            new CANNON.Vec3(
-              vertices[i] * 0.2,
-              vertices[i + 1] * 0.2,
-              vertices[i + 2] * 0.2
-            )
-          );
+      // Create CANNON bodies from each mesh in the track model
+      this.raceTrack.mesh.traverse((child: THREE.Object3D) => {
+        if (child instanceof THREE.Mesh) {
+          // Vérifier si le maillage a une géométrie
+          if (child.geometry) {
+            // Vérifier les différents types d'objets qui nécessitent des boîtes de collision
+            const isIcosphere = child.name.includes('Icosphere00');
+            const isStorage = child.name.includes('Storage');
+            const isOilBarrel = child.name.includes('OilBarrel0');
+            const isThree = child.name.includes('Tree0');
+            const isBaseThree = child.name.includes('Base_Tree0');
+            
+            // Log pour le débogage
+           
+            
+            // Créer un corps physique pour ce maillage avec un type spécifique 
+            // pour les objets qui nécessitent des boîtes de collision
+            if (isIcosphere || isStorage || isOilBarrel || isThree || isBaseThree) {
+              if (Math.random() > this.physicsDensity) {
+                return; // Ignorer certains objets selon la densité configurée
+              }
+              this.createPhysicsBodyFromMesh(child, this.raceTrack.mesh.scale, 'box');
+            } else {
+              this.createPhysicsBodyFromMesh(child, this.raceTrack.mesh.scale);
+            }
+          }
         }
-
-        // 2️⃣ Générer les faces (indices) à partir de la géométrie
-        const indices = mesh.geometry.index ? mesh.geometry.index.array : [];
-        const faces = [];
-        
-        // Créer des faces à partir des indices en inversant l'ordre pour corriger l'orientation
-        for (let i = 0; i < indices.length; i += 3) {
-          // Inverser l'ordre des indices pour corriger l'orientation des faces
-          faces.push([indices[i], indices[i + 2], indices[i + 1]]);
-        }
-
-        // 3️⃣ Créer la forme ConvexPolyhedron avec les faces
-        const shape = new CANNON.ConvexPolyhedron({
-          vertices: cannonVertices,
-          faces: faces,
-        });
-
-        // 4️⃣ Créer le body avec la collision
-        this.raceTrackBody = new CANNON.Body({
-          mass: 0, // 0 = Statique
-          shape: shape,
-        });
-
-        // 5️⃣ Appliquer une rotation de -90° en X
-        const rotationQuaternion = new CANNON.Quaternion();
-        rotationQuaternion.setFromEuler(0, -Math.PI / 2, 0);
-        this.raceTrackBody.quaternion.copy(rotationQuaternion);
-
-        // 6️⃣ Positionner le body Cannon.js indépendamment du modèle Three.js
-        this.raceTrackBody.position.set(0, 4, -45); // Position fixe pour le cannon
-        
-        this.world.addBody(this.raceTrackBody);
-        console.log("Race Track Body created with vertices:", cannonVertices.length, "and faces:", faces.length);
-
-        // 7️⃣ Synchroniser Cannon.js et Three.js dans la loop d'animation
-        this.updatePhysics = () => {
-          // Suppression de la synchronisation pour que le cannon soit indépendant
-        };
-      }
+      });
+      
 
       // === Physics for Car ===
       const carShape = new CANNON.Box(new CANNON.Vec3(0.5, 0.5, 1)); // Adjust size
       this.carBody = new CANNON.Body({
         mass: 10,
         shape: carShape,
-        position: new CANNON.Vec3(16, 15, -20), // Start above ground
+        position: new CANNON.Vec3(-3, 15, -20), // Start above ground
       });
       this.world.addBody(this.carBody);
 
       // Ajuster la position de la voiture
       //  this.car.mesh.position.set(0, 10, 0);
+
+      // Trouver les roues dans le modèle de la voiture
+      this.car.mesh.traverse((child) => {
+        if (child) {
+          console.log(child.name);
+          if (child.name === "Front_wheel" && !child.name.includes("001")) {
+          
+            this.frontWheelLeft = child;
+            console.log("Roue avant gauche trouvée:", child.name);
+          } else if (child.name === "Front_wheel001") {
+            this.frontWheelRight = child;
+            console.log("Roue avant droite trouvée:", child.name);
+          } else if (child.name === "Rear_wheel" && !child.name.includes("001")) {
+            this.rearWheelLeft = child;
+            console.log("Roue arrière gauche trouvée:", child.name);
+          } else if (child.name === "Rear_wheel001") {
+            this.rearWheelRight = child;
+            console.log("Roue arrière droite trouvée:", child.name);
+          }
+        }
+      });
     } catch (error) {
       console.error("Erreur lors du chargement des modèles:", error);
     }
 
-    // === Add Cylinder for Mapping ===
-   
     // === Stats ===
     this.stats = new Stats();
     this.stats.showPanel(0); // 0: fps
@@ -251,6 +259,7 @@ export class App {
     carSpeedFolder.add(carSpeedControls, "deceleration", 0.01, 0.1, 0.005).name("Deceleration").onChange((value: number) => {
       this.deceleration = value;
     });
+    carSpeedFolder.add(this, "wheelRotationSpeed", 0.05, 0.5, 0.05).name("Vitesse rotation roues");
     carSpeedFolder.open();
 
     // Car physics controls
@@ -273,45 +282,7 @@ export class App {
     
     carFolder.open();
 
-    // === Race Track GUI Controls ===
-    const raceTrackFolder = this.gui.addFolder("Race Track");
-
-    // Race Track position controls
-    const raceTrackPositionFolder = raceTrackFolder.addFolder("Position");
-    raceTrackPositionFolder.add(this.raceTrackBody.position, "x", -50, 100).name("X");
-    raceTrackPositionFolder.add(this.raceTrackBody.position, "y", -20, 20).name("Y");
-    raceTrackPositionFolder.add(this.raceTrackBody.position, "z", -50, 100).name("Z");
-    raceTrackPositionFolder.open();
-
-    // Race Track rotation controls
-    const raceTrackRotationFolder = raceTrackFolder.addFolder("Rotation");
-    const raceTrackRotation = {
-      x: 0,
-      y: 0,
-      z: 0
-    };
-    raceTrackRotationFolder.add(raceTrackRotation, "x", -Math.PI, Math.PI, 0.01).name("X").onChange((value: number) => {
-      this.raceTrackBody.quaternion.setFromEuler(value, raceTrackRotation.y, raceTrackRotation.z);
-    });
-    raceTrackRotationFolder.add(raceTrackRotation, "y", -Math.PI, Math.PI, 0.01).name("Y").onChange((value: number) => {
-      this.raceTrackBody.quaternion.setFromEuler(raceTrackRotation.x, value, raceTrackRotation.z);
-    });
-    raceTrackRotationFolder.add(raceTrackRotation, "z", -Math.PI, Math.PI, 0.01).name("Z").onChange((value: number) => {
-      this.raceTrackBody.quaternion.setFromEuler(raceTrackRotation.x, raceTrackRotation.y, value);
-    });
-    raceTrackRotationFolder.open();
-
-    // Reset race track position
-    raceTrackFolder.add({ reset: () => {
-      this.raceTrackBody.position.set(0, -5, -45);
-      this.raceTrackBody.quaternion.setFromEuler(0, 0, 0);
-      raceTrackRotation.x = 0;
-      raceTrackRotation.y = 0;
-      raceTrackRotation.z = 0;
-    }}, "reset").name("Reset Race Track");
     
-    raceTrackFolder.open();
-
     // === Plane Body GUI Controls ===
     const planeFolder = this.gui.addFolder("Plane");
 
@@ -357,6 +328,33 @@ export class App {
       scale: 1, // Optional: Set the scale of the debug meshes
     });
 
+    // === Performance GUI Controls ===
+    const qualityFolder = this.gui.addFolder("Performance");
+    qualityFolder.add(this, "isLowQuality").name("Mode basse qualité").onChange(() => {
+      // Recréer le renderer avec les nouveaux paramètres
+      document.body.removeChild(this.renderer.domElement);
+      this.renderer = new THREE.WebGLRenderer({ antialias: !this.isLowQuality });
+      this.renderer.setSize(window.innerWidth, window.innerHeight);
+      document.body.appendChild(this.renderer.domElement);
+    });
+
+    // Ajouter un contrôle pour le facteur de résolution
+    const resolutionScale = { value: 1.0 };
+    qualityFolder.add(resolutionScale, "value", 0.5, 1.0, 0.1).name("Échelle résolution").onChange((value) => {
+      this.renderer.setSize(window.innerWidth * value, window.innerHeight * value, false);
+    });
+    qualityFolder.open();
+
+    // Dans le GUI
+    const physicsFolder = this.gui.addFolder("Physics");
+    physicsFolder.add(this, "physicsStepFrequency", 30, 60, 10).name("Fréquence physique (Hz)");
+
+    // Dans le GUI
+    qualityFolder.add(this, "renderDistance", 100, 1000, 100).name("Distance de rendu").onChange((value) => {
+      this.camera.far = value;
+      this.camera.updateProjectionMatrix();
+    });
+
     window.addEventListener("resize", this.onWindowResize.bind(this));
     window.addEventListener("keydown", this.handleKeyDown.bind(this));
     window.addEventListener("keyup", this.handleKeyUp.bind(this));
@@ -364,9 +362,21 @@ export class App {
 
   animate = () => {
     requestAnimationFrame(this.animate);
-    this.world.step(1 / 60);
-    this.stats.begin();
+    
+    // Calculer le delta time
+    const delta = this.clock.getDelta();
+    
+    // Mettre à jour les animations
+    if (this.car && this.car.mixer) {
+      this.car.updateAnimation(delta);
+    }
+    if (this.raceTrack && this.raceTrack.mixer) {
+      this.raceTrack.updateAnimation(delta);
+    }
 
+    this.world.step(1 / this.physicsStepFrequency);
+    // this.stats.begin();
+  
     // Update the car mesh position and rotation
     this.car.mesh.position.copy(this.carBody.position as any);
     this.car.mesh.quaternion.copy(this.carBody.quaternion as any);
@@ -378,7 +388,7 @@ export class App {
     this.controls.update();
 
     // Update the debug renderer
-    this.cannonDebugger.update();
+    // this.cannonDebugger.update();
 
     if (this.isFreeCamera) {
       this.handleCameraMovement(); // Déplacer la caméra librement
@@ -386,8 +396,8 @@ export class App {
       const direction = new THREE.Vector3();
       this.car.mesh.getWorldDirection(direction);
 
-      const cameraOffset = direction.clone().multiplyScalar(-3); // Reculer de 3 unités
-      cameraOffset.y += 1.5;
+      const cameraOffset = direction.clone().multiplyScalar(-10); // Reculer la caméra
+      cameraOffset.y += 10; // Augmenter la hauteur pour une meilleure vue d'ensemble
 
       const cameraPosition = this.car.mesh.position.clone().add(cameraOffset);
       this.camera.position.copy(cameraPosition);
@@ -420,7 +430,7 @@ export class App {
   }
 
   private handleCameraMovement() {
-    const cameraSpeed = 0.5; // Vitesse de déplacement de la caméra
+    const cameraSpeed = 1.5; // Vitesse de déplacement de la caméra
 
     if (this.keys["ArrowUp"]) {
       this.camera.position.z += cameraSpeed; // Déplacer la caméra vers l'avant
@@ -443,8 +453,9 @@ export class App {
   }
 
   private controlCar() {
-    const speed = 0.56; // Adjust speed as needed
-    const turnSpeed = 0.02; // Vitesse de rotation (identique à votre code précédent)
+    const speed = 0.1; // Adjust speed as needed
+    const turnSpeed = 0.03; // Vitesse de rotation (identique à votre code précédent)
+    const wheelTurnAngle = 0.2; // Angle de rotation des roues avant
 
     // Calculate the forward direction of the car
     const direction = new THREE.Vector3();
@@ -472,56 +483,86 @@ export class App {
     if (this.carBody.position.y < 0) {
       this.carBody.position.y = 0; // Ensure the car does not go below the plane
     }
+
     // Rotation
     if (this.keys["z"] || this.keys["s"]) {
       if (this.keys["s"]) {
         if (this.keys["q"]) {
-          // Tourner à gauche (similaire à this.car.mesh.rotation.y += 0.02)
+          // Tourner à gauche
           const currentQuaternion = this.carBody.quaternion;
           const rotationQuaternion = new CANNON.Quaternion().setFromAxisAngle(
             new CANNON.Vec3(0, 1, 0), // Axe de rotation (vertical)
             -turnSpeed // Angle de rotation
           );
-
-          // Multiplier le quaternion actuel par le quaternion de rotation
           currentQuaternion.mult(rotationQuaternion, currentQuaternion);
         }
         if (this.keys["d"]) {
-          // Tourner à gauche (similaire à this.car.mesh.rotation.y += 0.02)
+          // Tourner à droite
           const currentQuaternion = this.carBody.quaternion;
           const rotationQuaternion = new CANNON.Quaternion().setFromAxisAngle(
             new CANNON.Vec3(0, 1, 0), // Axe de rotation (vertical)
             turnSpeed // Angle de rotation
           );
-
-          // Multiplier le quaternion actuel par le quaternion de rotation
           currentQuaternion.mult(rotationQuaternion, currentQuaternion);
         }
       } else {
         if (this.keys["q"]) {
-          // Tourner à gauche (similaire à this.car.mesh.rotation.y += 0.02)
+          // Tourner à gauche
           const currentQuaternion = this.carBody.quaternion;
           const rotationQuaternion = new CANNON.Quaternion().setFromAxisAngle(
             new CANNON.Vec3(0, 1, 0), // Axe de rotation (vertical)
             turnSpeed // Angle de rotation
           );
-
-          // Multiplier le quaternion actuel par le quaternion de rotation
           currentQuaternion.mult(rotationQuaternion, currentQuaternion);
         }
         if (this.keys["d"]) {
-          // Tourner à gauche (similaire à this.car.mesh.rotation.y += 0.02)
+          // Tourner à droite
           const currentQuaternion = this.carBody.quaternion;
           const rotationQuaternion = new CANNON.Quaternion().setFromAxisAngle(
             new CANNON.Vec3(0, 1, 0), // Axe de rotation (vertical)
             -turnSpeed // Angle de rotation
           );
-
-          // Multiplier le quaternion actuel par le quaternion de rotation
           currentQuaternion.mult(rotationQuaternion, currentQuaternion);
         }
       }
     }
+
+    // Faire tourner les roues seulement si on avance ou recule
+    if (this.keys["z"] || this.keys["s"]) {
+      // Calculer la vitesse de rotation des roues
+      const wheelRotation = this.keys["z"] ? this.wheelRotationSpeed : -this.wheelRotationSpeed;
+      
+      // Faire tourner les roues si elles existent
+      if (this.frontWheelLeft) {
+        this.frontWheelLeft.rotation.z += wheelRotation;
+        // Pivoter les roues avant selon la direction
+        if (this.keys["q"]) {
+          this.frontWheelLeft.rotation.y = wheelTurnAngle;
+        } else if (this.keys["d"]) {
+          this.frontWheelLeft.rotation.y = -wheelTurnAngle;
+        } else {
+          this.frontWheelLeft.rotation.y = 0;
+        }
+      }
+      if (this.frontWheelRight) {
+        this.frontWheelRight.rotation.z += wheelRotation;
+        // Pivoter les roues avant selon la direction
+        if (this.keys["q"]) {
+          this.frontWheelRight.rotation.y = -wheelTurnAngle;
+        } else if (this.keys["d"]) {
+          this.frontWheelRight.rotation.y = wheelTurnAngle;
+        } else {
+          this.frontWheelRight.rotation.y = 0;
+        }
+      }
+      if (this.rearWheelLeft) {
+        this.rearWheelLeft.rotation.z += wheelRotation;
+      }
+      if (this.rearWheelRight) {
+        this.rearWheelRight.rotation.z += wheelRotation;
+      }
+    }
+
     this.handleCameraMovement(); // Appeler la méthode de mouvement de la caméra
   }
 
@@ -531,17 +572,115 @@ export class App {
     window.location.reload(); // Recharger la page
   }
 
-  private updateCylinderShape() {
-    // Mettre à jour la forme du cylindre dans le monde physique
-    this.world.removeBody(this.mapCylinderBody); // Retirer l'ancien corps
-    const cylinderShape = new CANNON.Cylinder(
-      this.cylinderRadius,
-      this.cylinderRadius,
-      this.cylinderHeight,
-      32
-    );
-    this.mapCylinderBody = new CANNON.Body({ mass: 0 }); // Static body
-    this.mapCylinderBody.addShape(cylinderShape);
-    this.world.addBody(this.mapCylinderBody); // Ajouter le nouveau corps
+  // Méthode pour créer un corps physique à partir d'un maillage Three.js
+  private createPhysicsBodyFromMesh(mesh: THREE.Mesh, parentScale?: THREE.Vector3, forceType?: string) {
+    // Forcer la mise à jour de la matrice mondiale pour garantir des positions correctes
+    mesh.updateMatrixWorld(true);
+    
+    // Obtenir la position mondiale et la rotation du maillage
+    const position = new THREE.Vector3();
+    const quaternion = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    
+    mesh.matrixWorld.decompose(position, quaternion, scale);
+    
+    // Si une échelle parentale est fournie, l'appliquer également
+    if (parentScale) {
+      scale.multiply(parentScale);
+    }
+    
+    // Cloner la géométrie pour éviter de modifier l'original
+    const geometry = mesh.geometry.clone();
+    
+    // S'assurer que la géométrie est non-indexée pour un accès facile aux sommets
+    if (geometry.index !== null) {
+      geometry.toNonIndexed();
+    }
+    
+    // Obtenir les positions des sommets
+    const positions = geometry.attributes.position.array;
+    
+    if (positions.length <= 0) {
+      console.warn("Géométrie sans sommets détectée, ignorée");
+      return;
+    }
+    
+    // Créer un trimesh (maillage triangulaire) Cannon
+    const vertices: number[] = [];
+    const indices: number[] = [];
+    
+    // Extraire les sommets en appliquant l'échelle
+    for (let i = 0; i < positions.length; i += 3) {
+      vertices.push(
+        positions[i] * scale.x,
+        positions[i + 1] * scale.y,
+        positions[i + 2] * scale.z
+      );
+    }
+    
+    // Créer des indices pour les triangles
+    for (let i = 0; i < vertices.length / 3; i += 3) {
+      indices.push(i, i + 1, i + 2);
+    }
+    
+    // Pour les grands modèles comme le circuit, utiliser une forme simplifiée au lieu d'un trimesh complet
+    let body: CANNON.Body;
+    
+    // Calculer les dimensions de la boîte englobante (nécessaire quel que soit le type)
+    const bbox = new THREE.Box3().setFromBufferAttribute(geometry.attributes.position);
+    const size = new THREE.Vector3();
+    bbox.getSize(size);
+    
+    // Calculer le centre de la boîte englobante par rapport à l'origine
+    const center = new THREE.Vector3();
+    bbox.getCenter(center);
+    
+    // Appliquer l'échelle aux dimensions
+    size.multiply(scale).multiplyScalar(0.5); // Demi-dimensions pour Cannon.Box
+    
+    // Utiliser une boîte pour plus d'objets
+    if (forceType === 'box' || vertices.length > 1000) {
+      // Log pour les icospheres
+      if (forceType === 'box') {
+      }
+      
+      const boxShape = new CANNON.Box(new CANNON.Vec3(size.x, size.y, size.z));
+      body = new CANNON.Body({ mass: 0 }); // Statique
+      
+      // Ajouter la forme avec un offset correspondant au centre relatif
+      const centerOffset = new CANNON.Vec3(
+        center.x * scale.x,
+        center.y * scale.y,
+        center.z * scale.z
+      );
+      body.addShape(boxShape, centerOffset);
+    } else {
+      // Pour les petits objets, utiliser un trimesh
+      const trimesh = new CANNON.Trimesh(vertices, indices);
+      body = new CANNON.Body({ mass: 0 }); // Statique
+      body.addShape(trimesh);
+    }
+    
+    // Positionner le corps
+    body.position.set(position.x, position.y, position.z);
+    body.quaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w);
+    
+    // Ajustement pour corriger le décalage
+    body.position.y += 0.01; // Légère élévation pour éviter les problèmes de z-fighting
+    
+    // Pour les icosphères, rendre le corps physique plus réactif aux collisions
+    if (forceType === 'box') {
+      body.collisionFilterGroup = 2; // Groupe spécial pour les icosphères
+      body.collisionFilterMask = 1; // Ne collisionne qu'avec le groupe 1 (la voiture)
+      
+      // Pour améliorer les performances de collision
+      body.collisionResponse = 1; // Activer la réponse à la collision
+      body.material = new CANNON.Material({ friction: 0.3, restitution: 0.4 }); // Matériau avec frottement modéré
+    }
+    
+    // Ajouter le corps au monde physique
+    this.world.addBody(body);
+    
+    return body;
   }
 }
